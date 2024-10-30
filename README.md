@@ -5,7 +5,6 @@
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 </div>
----
 
 GoCluster is a command-line interface (CLI) tool for managing multi-goclusters at the tips of your hands, Please visit the [GoCluster GitHub repository](https://github.com/Prajwalprakash3722/gocluster) to understand what is GoCluster and how to use it.
 
@@ -26,7 +25,7 @@ cd gocluster-cli
 ### Build the project:
 
 ```bash
-go build -o gocluster
+make {build|linux} # build for macos
 ```
 ### Run the CLI:
 
