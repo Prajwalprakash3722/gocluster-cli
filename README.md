@@ -53,5 +53,43 @@ clusters:
       node004: "node004.example.com:8080"
     name: "stg-nodes"
     port: 7946
-Usage
+```
+## Usage Examples
+
+### List Cluster Nodes
+
+```bash
+$ gocluster nodes stg-nodes
++-----------+--------------------------+-------------------------------------+----------+
+|  NODE ID  |          ADDRESS         |              LAST SEEN              |  STATE   |
++-----------+--------------------------+-------------------------------------+----------+
+| node003   | node003.example.com:8080 | 2024-10-30T17:15:30.487221912+05:30| follower  |
+| node004   | node004.example.com:8080 | 2024-10-30T17:15:30.491098466+05:30| follower  |
+| node002   | node002.example.com:8080 | 2024-10-30T17:15:30.482072842+05:30| follower  |
++-----------+--------------------------+-------------------------------------+----------+
+```
+
+### Check Cluster Health
+
+```bash
+$ gocluster health stg-nodes
++-----------+-----------+---------------------------+
+|   NODE    |  STATUS   |         ADDRESS           |
++-----------+-----------+---------------------------+
+| node004   | Healthy   | node004.example.com:8080  |
+| node003   | Healthy   | node003.example.com:8080  |
+| node002   | Healthy   | node002.example.com:8080  |
+| node001   | Healthy   | node001.example.com:8080  |
++-----------+-----------+---------------------------+
+```
+
+### Get Cluster Leader
+
+```bash
+$ gocluster leader stg-nodes
++-----------+--------------------------+
+| LEADER ID |         ADDRESS          |
++-----------+--------------------------+
+| node001   | node001.example.com:8080 |
++-----------+--------------------------+
 ```
