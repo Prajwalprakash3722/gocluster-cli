@@ -125,9 +125,22 @@ func init() {
 
 	operatorCmd.AddCommand(
 		&cobra.Command{
-			Use:   "list",
-			Short: "List available operators",
+			Use:   "list [operator_name]",
+			Short: "List available operators or show detailed info for a specific operator",
 			Run:   listOperators,
+		},
+		&cobra.Command{
+			Use:   "show [operator_name]",
+			Short: "Show detailed information for a specific operator",
+			Args:  cobra.ExactArgs(1),
+			Run: func(cmd *cobra.Command, args []string) {
+				cluster, err := getSelectedCluster()
+				if err != nil {
+					fmt.Printf("Error: %v\n", err)
+					return
+				}
+				showOperatorDetails(cluster, args[0])
+			},
 		},
 		triggerCmd,
 	)
@@ -332,6 +345,12 @@ func listOperators(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	// Check if we're showing detailed info for a specific operator
+	if len(args) > 0 {
+		showOperatorDetails(cluster, args[0])
+		return
+	}
+
 	resp, err := fetchFromAPI(cluster, "operator/list")
 	if err != nil {
 		fmt.Printf("Error fetching operators: %v\n", err)
@@ -344,98 +363,81 @@ func listOperators(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	// Create and configure table for summary view
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Name", "Version", "Author", "Description"})
+	table.SetAutoWrapText(false)
+	table.SetColumnAlignment([]int{
+		tablewriter.ALIGN_LEFT,
+		tablewriter.ALIGN_CENTER,
+		tablewriter.ALIGN_LEFT,
+		tablewriter.ALIGN_LEFT,
+	})
+
 	for _, op := range operators {
 		operator := op.(map[string]interface{})
-		fmt.Printf("\n🔧 Operator: %s (v%s)\n", operator["name"], operator["version"])
-		fmt.Printf("📝 Description: %s\n", operator["description"])
-		fmt.Printf("👤 Author: %s\n", operator["author"])
-
-		if operations, ok := operator["operations"].(map[string]interface{}); ok {
-			fmt.Println("\n📋 Available Operations:")
-			for opName, opData := range operations {
-				opInfo := opData.(map[string]interface{})
-				fmt.Printf("\n▶️  %s\n", opName)
-				fmt.Printf("   Description: %s\n", opInfo["description"])
-
-				// Parameters table
-				if params, ok := opInfo["parameters"].(map[string]interface{}); ok && len(params) > 0 {
-					fmt.Println("\n   Parameters:")
-					table := tablewriter.NewWriter(os.Stdout)
-					table.SetHeader([]string{"Name", "Type", "Required", "Default", "Description"})
-					table.SetColumnAlignment([]int{
-						tablewriter.ALIGN_LEFT,
-						tablewriter.ALIGN_LEFT,
-						tablewriter.ALIGN_CENTER,
-						tablewriter.ALIGN_LEFT,
-						tablewriter.ALIGN_LEFT,
-					})
-
-					for name, p := range params {
-						param := p.(map[string]interface{})
-						defaultVal := "nil"
-						if param["default"] != nil {
-							defaultVal = fmt.Sprintf("%v", param["default"])
-						}
-						table.Append([]string{
-							name,
-							param["type"].(string),
-							fmt.Sprintf("%v", param["required"]),
-							defaultVal,
-							param["description"].(string),
-						})
-					}
-					table.Render()
-				}
-
-				// Namespace parameters table
-				if namespace, ok := opInfo["namespace"].(map[string]interface{}); ok && len(namespace) > 0 {
-					fmt.Println("\n   Namespace Parameters:")
-					table := tablewriter.NewWriter(os.Stdout)
-					table.SetHeader([]string{"Name", "Type", "Required", "Default", "Description"})
-
-					for name, p := range namespace {
-						param := p.(map[string]interface{})
-						defaultVal := "nil"
-						if param["default"] != nil {
-							defaultVal = fmt.Sprintf("%v", param["default"])
-						}
-						table.Append([]string{
-							name,
-							param["type"].(string),
-							fmt.Sprintf("%v", param["required"]),
-							defaultVal,
-							param["description"].(string),
-						})
-					}
-					table.Render()
-				}
-
-				// Config parameters table
-				if config, ok := opInfo["config"].(map[string]interface{}); ok && len(config) > 0 {
-					fmt.Println("\n   Config Parameters:")
-					table := tablewriter.NewWriter(os.Stdout)
-					table.SetHeader([]string{"Name", "Type", "Required", "Default", "Description"})
-
-					for name, p := range config {
-						param := p.(map[string]interface{})
-						defaultVal := "nil"
-						if param["default"] != nil {
-							defaultVal = fmt.Sprintf("%v", param["default"])
-						}
-						table.Append([]string{
-							name,
-							param["type"].(string),
-							fmt.Sprintf("%v", param["required"]),
-							defaultVal,
-							param["description"].(string),
-						})
-					}
-					table.Render()
-				}
-			}
-		}
-		fmt.Println()
+		table.Append([]string{
+			operator["name"].(string),
+			operator["version"].(string),
+			operator["author"].(string),
+			operator["description"].(string),
+		})
 	}
+
+	fmt.Println("\nAvailable Operators")
+	fmt.Println("Use 'gocluster operator show <name>' for detailed information")
+	fmt.Println()
+	table.Render()
+}
+
+func showOperatorDetails(cluster *ClusterConfig, operatorName string) {
+	schema, err := fetchOperatorSchema(cluster, operatorName)
+	if err != nil {
+		fmt.Printf("Error fetching operator details: %v\n", err)
+		return
+	}
+
+	fmt.Printf("\nOperator: %s\n", schema.Name)
+	fmt.Printf("Version:     %s\n", schema.Version)
+	fmt.Printf("Description: %s\n\n", schema.Description)
+
+	fmt.Println("Available Operations")
+	fmt.Println("-------------------")
+
+	for opName, opSchema := range schema.Operations {
+		fmt.Printf("\n%s\n", opName)
+		fmt.Printf("%s\n", opSchema.Description)
+
+		// Parameters table
+		if len(opSchema.Parameters) > 0 {
+			fmt.Println("\nParameters:")
+			paramTable := tablewriter.NewWriter(os.Stdout)
+			paramTable.SetHeader([]string{"Name", "Type", "Required", "Default", "Description"})
+			paramTable.SetColumnAlignment([]int{
+				tablewriter.ALIGN_LEFT,
+				tablewriter.ALIGN_LEFT,
+				tablewriter.ALIGN_CENTER,
+				tablewriter.ALIGN_LEFT,
+				tablewriter.ALIGN_LEFT,
+			})
+
+			for name, param := range opSchema.Parameters {
+				defaultVal := "nil"
+				if param.Default != nil {
+					defaultVal = fmt.Sprintf("%v", param.Default)
+				}
+				paramTable.Append([]string{
+					name,
+					param.Type,
+					fmt.Sprintf("%v", param.Required),
+					defaultVal,
+					param.Description,
+				})
+			}
+			paramTable.Render()
+		}
+	}
+	fmt.Println()
 }
 
 func triggerOperator(cmd *cobra.Command, args []string) {
