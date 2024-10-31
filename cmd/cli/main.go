@@ -104,6 +104,7 @@ func init() {
 	rootCmd.AddCommand(newCmd("health", "Check cluster health", checkHealth))
 	rootCmd.AddCommand(newCmd("nodes", "List all nodes in the cluster", listNodes))
 	rootCmd.AddCommand(newCmd("leader", "Get current cluster leader", getLeader))
+	rootCmd.AddCommand(newCmd("clusters", "Get avaliable clusters", getClusterList))
 
 	// Operator commands
 	operatorCmd := &cobra.Command{
@@ -208,6 +209,17 @@ func useCluster(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Printf("Now using cluster: %s\n", clusterName)
+}
+
+func getClusterList(cmd *cobra.Command, args []string) {
+	// put it in a neat table format
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Avaliable Clusters"})
+	for name := range config.Clusters {
+		table.Append([]string{name})
+	}
+	table.Render()
+	return
 }
 
 func showSelectedCluster(cmd *cobra.Command, args []string) {
