@@ -3,6 +3,7 @@ module gocluster_cli
 go 1.21.13
 
 require (
+	github.com/dustin/go-humanize v1.0.1
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.19.0

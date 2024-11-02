@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	humanize "github.com/dustin/go-humanize"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -326,7 +327,6 @@ func viewLogs(cmd *cobra.Command, args []string) {
 	}
 
 	if followLogs {
-		// Implement WebSocket connection for log streaming
 		fmt.Println("Log streaming not implemented yet")
 	}
 }
@@ -395,7 +395,7 @@ func checkHealth(cmd *cobra.Command, args []string) {
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Node", "Status", "Last Seen"})
+	table.SetHeader([]string{"Node", "Status", "Address"})
 	for node, addr := range cluster.Nodes {
 		status := "Healthy"
 		if resp.Success == false {
@@ -426,7 +426,7 @@ func listNodes(cmd *cobra.Command, args []string) {
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Node ID", "Address", "Last Seen", "State"})
+	table.SetHeader([]string{"Node ID", "Address", "Age", "State"})
 	for _, nodeData := range nodes {
 		nodeMap, ok := nodeData.(map[string]interface{})
 		if !ok {
@@ -436,10 +436,11 @@ func listNodes(cmd *cobra.Command, args []string) {
 
 		id, _ := nodeMap["id"].(string)
 		address, _ := nodeMap["address"].(string)
-		lastSeen, _ := nodeMap["last_seen"].(string)
+		lastSeen, _ := time.Parse(time.RFC3339Nano, nodeMap["last_seen"].(string))
+		age := humanize.Time(lastSeen)
 		state, _ := nodeMap["state"].(string)
 
-		table.Append([]string{id, address, lastSeen, state})
+		table.Append([]string{id, address, age, state})
 	}
 	table.Render()
 }
