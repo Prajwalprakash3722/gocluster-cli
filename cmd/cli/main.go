@@ -45,7 +45,6 @@ type OperatorSchema struct {
 type OperationSchema struct {
 	Description string                 `json:"description"`
 	Parameters  map[string]ParamSchema `json:"parameters"`
-	Namespace   map[string]ParamSchema `json:"namespace"`
 	Config      map[string]ParamSchema `json:"config"`
 }
 
@@ -56,25 +55,47 @@ type ParamSchema struct {
 	Description string      `json:"description"`
 }
 
-type OperatorParam struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Required    bool   `json:"required"`
-	Default     string `json:"default"`
-	Description string `json:"description"`
-}
-
 type OperatorPayload struct {
-	Operation string                 `json:"operation"`
-	Namespace map[string]string      `json:"namespace,omitempty"`
-	Config    map[string]interface{} `json:"config,omitempty"`
-	Params    map[string]interface{} `json:"params,omitempty"`
+	Operation   string                 `json:"operation"`
+	Config      map[string]interface{} `json:"config,omitempty"`
+	Params      map[string]interface{} `json:"params,omitempty"`
+	Parallel    bool                   `json:"parallel"`
+	TargetNodes []string               `json:"target_nodes,omitempty"`
 }
 
+// Global flags
 var (
-	config  Config
-	rootCmd = &cobra.Command{Use: "gocluster"}
+	parallel    bool
+	targetNodes []string
+	logNode     string
+	logLines    int
+	followLogs  bool
+	config      Config
+	rootCmd     = &cobra.Command{Use: "gocluster"}
 )
+
+func initConfig() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Println("Error finding home directory:", err)
+		os.Exit(1)
+	}
+
+	viper.SetConfigType("yaml")
+	viper.SetConfigName(".gocluster")
+	viper.AddConfigPath(".")
+	viper.AddConfigPath(home)
+
+	if err := viper.ReadInConfig(); err != nil {
+		fmt.Println("Unable to read config:", err)
+		os.Exit(1)
+	}
+
+	if err := viper.Unmarshal(&config); err != nil {
+		fmt.Println("Unable to decode config:", err)
+		os.Exit(1)
+	}
+}
 
 func main() {
 	cobra.OnInitialize(initConfig)
@@ -85,6 +106,10 @@ func main() {
 }
 
 func init() {
+	// Global flags
+	rootCmd.PersistentFlags().BoolVar(&parallel, "parallel", true, "Run operations in parallel")
+	rootCmd.PersistentFlags().StringSliceVar(&targetNodes, "nodes", []string{}, "Specific nodes to run operation on (comma-separated)")
+
 	// Cluster management commands
 	rootCmd.AddCommand(
 		&cobra.Command{
@@ -104,7 +129,46 @@ func init() {
 	rootCmd.AddCommand(newCmd("health", "Check cluster health", checkHealth))
 	rootCmd.AddCommand(newCmd("nodes", "List all nodes in the cluster", listNodes))
 	rootCmd.AddCommand(newCmd("leader", "Get current cluster leader", getLeader))
-	rootCmd.AddCommand(newCmd("clusters", "Get avaliable clusters", getClusterList))
+	rootCmd.AddCommand(newCmd("clusters", "Get available clusters", getClusterList))
+
+	// Logs command
+	logsCmd := &cobra.Command{
+		Use:   "logs",
+		Short: "View cluster logs",
+		Run:   viewLogs,
+	}
+	logsCmd.Flags().StringVarP(&logNode, "node", "n", "", "Node to fetch logs from (defaults to leader)")
+	logsCmd.Flags().IntVarP(&logLines, "lines", "l", 100, "Number of log lines to fetch")
+	logsCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "Stream logs in real-time")
+	rootCmd.AddCommand(logsCmd)
+
+	// Metrics command
+	metricsCmd := &cobra.Command{
+		Use:   "metrics",
+		Short: "View cluster metrics",
+		Run:   viewMetrics,
+	}
+	rootCmd.AddCommand(metricsCmd)
+
+	// Config command
+	configCmd := &cobra.Command{
+		Use:   "config",
+		Short: "Manage cluster configuration",
+	}
+	configCmd.AddCommand(
+		&cobra.Command{
+			Use:   "view",
+			Short: "View current configuration",
+			Run:   viewConfig,
+		},
+		&cobra.Command{
+			Use:   "set [key] [value]",
+			Short: "Set configuration value",
+			Args:  cobra.ExactArgs(2),
+			Run:   setConfig,
+		},
+	)
+	rootCmd.AddCommand(configCmd)
 
 	// Operator commands
 	operatorCmd := &cobra.Command{
@@ -119,10 +183,8 @@ func init() {
 		Run:   triggerOperator,
 	}
 
-	// Add parameter flags
 	triggerCmd.Flags().StringToStringP("params", "p", nil, "Operation parameters (key=value)")
 	triggerCmd.Flags().StringToStringP("config", "c", nil, "Config parameters (key=value)")
-	triggerCmd.Flags().StringToStringP("namespace", "n", nil, "Namespace parameters (key=value)")
 
 	operatorCmd.AddCommand(
 		&cobra.Command{
@@ -151,29 +213,6 @@ func init() {
 
 func newCmd(use, short string, run func(cmd *cobra.Command, args []string)) *cobra.Command {
 	return &cobra.Command{Use: use, Short: short, Run: run}
-}
-
-func initConfig() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Println("Error finding home directory:", err)
-		os.Exit(1)
-	}
-
-	viper.SetConfigType("yaml")
-	viper.SetConfigName(".gocluster")
-	viper.AddConfigPath(".")
-	viper.AddConfigPath(home)
-
-	if err := viper.ReadInConfig(); err != nil {
-		fmt.Println("Unable to read config:", err)
-		os.Exit(1)
-	}
-
-	if err := viper.Unmarshal(&config); err != nil {
-		fmt.Println("Unable to decode config:", err)
-		os.Exit(1)
-	}
 }
 
 func useCluster(cmd *cobra.Command, args []string) {
@@ -241,25 +280,105 @@ func getSelectedCluster() (*ClusterConfig, error) {
 	return &cluster, nil
 }
 
-func fetchFromAPI(cluster *ClusterConfig, endpoint string) (*APIResponse, error) {
-	var nodeAddr string
-	for _, addr := range cluster.Nodes {
-		nodeAddr = addr
-		break
-	}
-	client := &http.Client{Timeout: time.Duration(config.Timeout) * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://%s/api/%s", nodeAddr, endpoint))
+// New command implementations
+func viewLogs(cmd *cobra.Command, args []string) {
+	cluster, err := getSelectedCluster()
 	if err != nil {
-		return nil, err
+		fmt.Printf("Error: %v\n", err)
+		return
 	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	var apiResp APIResponse
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, err
+	targetNode := logNode
+	if targetNode == "" {
+		// Get leader node if no specific node is specified
+		resp, err := fetchFromAPI(cluster, "leader")
+		if err != nil {
+			fmt.Printf("Error fetching leader: %v\n", err)
+			return
+		}
+		leader, ok := resp.Data.(map[string]interface{})
+		if !ok {
+			fmt.Println("Invalid response format for leader")
+			return
+		}
+		targetNode = leader["id"].(string)
 	}
-	return &apiResp, nil
+
+	endpoint := fmt.Sprintf("logs/%s?lines=%d", targetNode, logLines)
+	if followLogs {
+		endpoint += "&follow=true"
+	}
+
+	resp, err := fetchFromAPI(cluster, endpoint)
+	if err != nil {
+		fmt.Printf("Error fetching logs: %v\n", err)
+		return
+	}
+
+	logs, ok := resp.Data.([]interface{})
+	if !ok {
+		fmt.Println("Invalid response format for logs")
+		return
+	}
+
+	for _, log := range logs {
+		fmt.Println(log)
+	}
+
+	if followLogs {
+		// Implement WebSocket connection for log streaming
+		fmt.Println("Log streaming not implemented yet")
+	}
+}
+
+func showOperatorDetails(cluster *ClusterConfig, operatorName string) {
+	schema, err := fetchOperatorSchema(cluster, operatorName)
+	if err != nil {
+		fmt.Printf("Error fetching operator details: %v\n", err)
+		return
+	}
+
+	fmt.Printf("\nOperator: %s\n", schema.Name)
+	fmt.Printf("Version:     %s\n", schema.Version)
+	fmt.Printf("Description: %s\n\n", schema.Description)
+
+	fmt.Println("Available Operations")
+	fmt.Println("-------------------")
+
+	for opName, opSchema := range schema.Operations {
+		fmt.Printf("\n%s\n", opName)
+		fmt.Printf("%s\n", opSchema.Description)
+
+		// Parameters table
+		if len(opSchema.Parameters) > 0 {
+			fmt.Println("\nParameters:")
+			paramTable := tablewriter.NewWriter(os.Stdout)
+			paramTable.SetHeader([]string{"Name", "Type", "Required", "Default", "Description"})
+			paramTable.SetColumnAlignment([]int{
+				tablewriter.ALIGN_LEFT,
+				tablewriter.ALIGN_LEFT,
+				tablewriter.ALIGN_CENTER,
+				tablewriter.ALIGN_LEFT,
+				tablewriter.ALIGN_LEFT,
+			})
+
+			for name, param := range opSchema.Parameters {
+				defaultVal := "nil"
+				if param.Default != nil {
+					defaultVal = fmt.Sprintf("%v", param.Default)
+				}
+				paramTable.Append([]string{
+					name,
+					param.Type,
+					fmt.Sprintf("%v", param.Required),
+					defaultVal,
+					param.Description,
+				})
+			}
+			paramTable.Render()
+		}
+	}
+	fmt.Println()
 }
 
 func checkHealth(cmd *cobra.Command, args []string) {
@@ -402,62 +521,195 @@ func listOperators(cmd *cobra.Command, args []string) {
 	table.Render()
 }
 
-func showOperatorDetails(cluster *ClusterConfig, operatorName string) {
-	schema, err := fetchOperatorSchema(cluster, operatorName)
+func viewMetrics(cmd *cobra.Command, args []string) {
+	cluster, err := getSelectedCluster()
 	if err != nil {
-		fmt.Printf("Error fetching operator details: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	fmt.Printf("\nOperator: %s\n", schema.Name)
-	fmt.Printf("Version:     %s\n", schema.Version)
-	fmt.Printf("Description: %s\n\n", schema.Description)
-
-	fmt.Println("Available Operations")
-	fmt.Println("-------------------")
-
-	for opName, opSchema := range schema.Operations {
-		fmt.Printf("\n%s\n", opName)
-		fmt.Printf("%s\n", opSchema.Description)
-
-		// Parameters table
-		if len(opSchema.Parameters) > 0 {
-			fmt.Println("\nParameters:")
-			paramTable := tablewriter.NewWriter(os.Stdout)
-			paramTable.SetHeader([]string{"Name", "Type", "Required", "Default", "Description"})
-			paramTable.SetColumnAlignment([]int{
-				tablewriter.ALIGN_LEFT,
-				tablewriter.ALIGN_LEFT,
-				tablewriter.ALIGN_CENTER,
-				tablewriter.ALIGN_LEFT,
-				tablewriter.ALIGN_LEFT,
-			})
-
-			for name, param := range opSchema.Parameters {
-				defaultVal := "nil"
-				if param.Default != nil {
-					defaultVal = fmt.Sprintf("%v", param.Default)
-				}
-				paramTable.Append([]string{
-					name,
-					param.Type,
-					fmt.Sprintf("%v", param.Required),
-					defaultVal,
-					param.Description,
-				})
-			}
-			paramTable.Render()
-		}
+	resp, err := fetchFromAPI(cluster, "metrics")
+	if err != nil {
+		fmt.Printf("Error fetching metrics: %v\n", err)
+		return
 	}
-	fmt.Println()
+
+	metrics, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		fmt.Println("Invalid response format for metrics")
+		return
+	}
+
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Metric", "Value"})
+
+	for metric, value := range metrics {
+		table.Append([]string{metric, fmt.Sprintf("%v", value)})
+	}
+	table.Render()
 }
 
-func triggerOperator(cmd *cobra.Command, args []string) {
-	if len(args) < 2 {
-		fmt.Println("Usage: gocluster operator trigger <operator_name> <operation> [-p key=value] [-n key=value] [-c key=value]")
+func createBackup(cmd *cobra.Command, args []string) {
+	cluster, err := getSelectedCluster()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
+	backupName := args[0]
+	resp, err := fetchFromAPI(cluster, fmt.Sprintf("backup/create/%s", backupName))
+	if err != nil {
+		fmt.Printf("Error creating backup: %v\n", err)
+		return
+	}
+
+	if resp.Success {
+		fmt.Printf("Backup '%s' created successfully\n", backupName)
+	} else {
+		fmt.Printf("Failed to create backup: %s\n", resp.Error)
+	}
+}
+
+func listBackups(cmd *cobra.Command, args []string) {
+	cluster, err := getSelectedCluster()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	resp, err := fetchFromAPI(cluster, "backup/list")
+	if err != nil {
+		fmt.Printf("Error listing backups: %v\n", err)
+		return
+	}
+
+	backups, ok := resp.Data.([]interface{})
+	if !ok {
+		fmt.Println("Invalid response format for backups")
+		return
+	}
+
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Name", "Size", "Created At"})
+
+	for _, backup := range backups {
+		b := backup.(map[string]interface{})
+		table.Append([]string{
+			b["name"].(string),
+			b["size"].(string),
+			b["created_at"].(string),
+		})
+	}
+	table.Render()
+}
+
+func restoreBackup(cmd *cobra.Command, args []string) {
+	cluster, err := getSelectedCluster()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	backupName := args[0]
+	resp, err := fetchFromAPI(cluster, fmt.Sprintf("backup/restore/%s", backupName))
+	if err != nil {
+		fmt.Printf("Error restoring backup: %v\n", err)
+		return
+	}
+
+	if resp.Success {
+		fmt.Printf("Backup '%s' restored successfully\n", backupName)
+	} else {
+		fmt.Printf("Failed to restore backup: %s\n", resp.Error)
+	}
+}
+
+func viewConfig(cmd *cobra.Command, args []string) {
+	cluster, err := getSelectedCluster()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	resp, err := fetchFromAPI(cluster, "config")
+	if err != nil {
+		fmt.Printf("Error fetching config: %v\n", err)
+		return
+	}
+
+	config, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		fmt.Println("Invalid response format for config")
+		return
+	}
+
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Key", "Value"})
+
+	for key, value := range config {
+		table.Append([]string{key, fmt.Sprintf("%v", value)})
+	}
+	table.Render()
+}
+
+func setConfig(cmd *cobra.Command, args []string) {
+	cluster, err := getSelectedCluster()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	key := args[0]
+	value := args[1]
+
+	payload := map[string]string{
+		"key":   key,
+		"value": value,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Printf("Error encoding payload: %v\n", err)
+		return
+	}
+
+	var nodeAddr string
+	for _, addr := range cluster.Nodes {
+		nodeAddr = addr
+		break
+	}
+
+	client := &http.Client{}
+	req, err := http.NewRequest("POST",
+		fmt.Sprintf("http://%s/api/config/set", nodeAddr),
+		bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		fmt.Printf("Error creating request: %v\n", err)
+		return
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("Error sending request: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		fmt.Printf("Error decoding response: %v\n", err)
+		return
+	}
+
+	if apiResp.Success {
+		fmt.Printf("Configuration updated successfully\n")
+	} else {
+		fmt.Printf("Failed to update configuration: %s\n", apiResp.Error)
+	}
+}
+
+// Modified triggerOperator to use global flags
+func triggerOperator(cmd *cobra.Command, args []string) {
 	operatorName := args[0]
 	operationName := args[1]
 
@@ -484,7 +736,6 @@ func triggerOperator(cmd *cobra.Command, args []string) {
 	}
 
 	params, _ := cmd.Flags().GetStringToString("params")
-	namespace, _ := cmd.Flags().GetStringToString("namespace")
 	config, _ := cmd.Flags().GetStringToString("config")
 
 	validatedParams, err := validateAndConvertParams(params, opSchema.Parameters)
@@ -499,12 +750,6 @@ func triggerOperator(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	validatedNamespace, err := validateAndConvertParams(namespace, opSchema.Namespace)
-	if err != nil {
-		fmt.Printf("Namespace validation error: %v\n", err)
-		return
-	}
-
 	validatedConfig, err := validateAndConvertParams(config, opSchema.Config)
 	if err != nil {
 		fmt.Printf("Config validation error: %v\n", err)
@@ -512,10 +757,11 @@ func triggerOperator(cmd *cobra.Command, args []string) {
 	}
 
 	payload := OperatorPayload{
-		Operation: operationName,
-		Params:    validatedParams,
-		Namespace: stringMapFromInterface(validatedNamespace),
-		Config:    validatedConfig,
+		Operation:   operationName,
+		Params:      validatedParams,
+		Config:      validatedConfig,
+		Parallel:    parallel,
+		TargetNodes: targetNodes,
 	}
 
 	var nodeAddr string
@@ -558,31 +804,19 @@ func triggerOperator(cmd *cobra.Command, args []string) {
 		fmt.Printf("Failed to trigger operation: %s\n", apiResp.Error)
 	} else {
 		fmt.Println("Operation triggered successfully")
+		if responseData, ok := apiResp.Data.(map[string]interface{}); ok {
+			if jobID, exists := responseData["job_id"]; exists {
+				fmt.Printf("Job ID: %v\n", jobID)
+				fmt.Println("Use 'gocluster operator status <job_id>' to check the status")
+			}
+		}
 	}
-}
-
-func fetchOperatorSchema(cluster *ClusterConfig, operatorName string) (*OperatorSchema, error) {
-	resp, err := fetchFromAPI(cluster, fmt.Sprintf("operator/schema/%s", operatorName))
-	if err != nil {
-		return nil, err
-	}
-
-	schemaData, err := json.Marshal(resp.Data)
-	if err != nil {
-		return nil, err
-	}
-
-	var schema OperatorSchema
-	if err := json.Unmarshal(schemaData, &schema); err != nil {
-		return nil, err
-	}
-
-	return &schema, nil
 }
 
 func validateAndConvertParams(params map[string]string, schema map[string]ParamSchema) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 
+	// Check for required parameters
 	for name, paramSchema := range schema {
 		if paramSchema.Required {
 			if _, exists := params[name]; !exists {
@@ -595,6 +829,7 @@ func validateAndConvertParams(params map[string]string, schema map[string]ParamS
 		}
 	}
 
+	// Convert and validate provided parameters
 	for name, value := range params {
 		paramSchema, exists := schema[name]
 		if !exists {
@@ -626,10 +861,43 @@ func convertValue(value string, targetType string) (interface{}, error) {
 	}
 }
 
-func stringMapFromInterface(m map[string]interface{}) map[string]string {
-	result := make(map[string]string)
-	for k, v := range m {
-		result[k] = fmt.Sprint(v)
+func fetchFromAPI(cluster *ClusterConfig, endpoint string) (*APIResponse, error) {
+	var lastErr error
+	for _, addr := range cluster.Nodes {
+		client := &http.Client{Timeout: time.Duration(config.Timeout) * time.Second}
+		resp, err := client.Get(fmt.Sprintf("http://%s/api/%s", addr, endpoint))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(resp.Body)
+		var apiResp APIResponse
+		if err := json.Unmarshal(body, &apiResp); err != nil {
+			lastErr = err
+			continue
+		}
+		return &apiResp, nil
 	}
-	return result
+	return nil, fmt.Errorf("failed to fetch from any node: %v", lastErr)
+}
+
+func fetchOperatorSchema(cluster *ClusterConfig, operatorName string) (*OperatorSchema, error) {
+	resp, err := fetchFromAPI(cluster, fmt.Sprintf("operator/schema/%s", operatorName))
+	if err != nil {
+		return nil, err
+	}
+
+	schemaData, err := json.Marshal(resp.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	var schema OperatorSchema
+	if err := json.Unmarshal(schemaData, &schema); err != nil {
+		return nil, err
+	}
+
+	return &schema, nil
 }

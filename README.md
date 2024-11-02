@@ -36,18 +36,23 @@ Usage:
   gocluster [command]
 
 Available Commands:
-  clusters    Get avaliable clusters
+  clusters    Get available clusters
   completion  Generate the autocompletion script for the specified shell
+  config      Manage cluster configuration
   health      Check cluster health
   help        Help about any command
   leader      Get current cluster leader
+  logs        View cluster logs
+  metrics     View cluster metrics
   nodes       List all nodes in the cluster
   operator    Operator commands
   use         Select a cluster to use
   which       Show currently selected cluster
 
 Flags:
-  -h, --help   help for gocluster
+  -h, --help            help for gocluster
+      --nodes strings   Specific nodes to run operation on (comma-separated)
+      --parallel        Run operations in parallel (default true)
 
 Use "gocluster [command] --help" for more information about a command.
 ```
