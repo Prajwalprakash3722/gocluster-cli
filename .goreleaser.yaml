@@ -1,0 +1,44 @@
+version: 2
+project_name: gocluster-cli
+
+# General release configuration
+release:
+  github:
+    owner: Prajwalprakash3722
+    name: gocluster-cli
+
+# Building section
+builds:
+  - id: gocluster-cli
+    main: ./cmd/cli/main.go
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    binary: gocluster-cli
+    ldflags:
+      - -s -w
+    env:
+      - CGO_ENABLED=0
+
+# Archive configuration
+archives:
+  - format: tar.gz
+    files:
+      - dist/config.yaml
+      - dist/metadata.json
+
+# Snapshot configuration
+snapshot:
+  name_template: "{{ .Tag }}-SNAPSHOT-{{ .ShortCommit }}"
+
+# Changelog generation (optional)
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
