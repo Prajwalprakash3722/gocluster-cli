@@ -199,6 +199,32 @@ $ gocluster operator trigger aerospike add_namespace -p name=testing-for-github 
 Operation triggered successfully
 ```
 
+### Get Cluster Logs (Experimental)
+
+```bash
+$ gocluster logs --lines 5 --level DEBUG
+
+[2024-11-10 16:48:10] [INFO] Broadcasting heartbeat
+[2024-11-10 16:48:12] [INFO] Broadcasting heartbeat
+[2024-11-10 16:48:14] [INFO] Broadcasting heartbeat
+[2024-11-10 16:48:16] [INFO] Broadcasting heartbeat
+[2024-11-10 16:48:18] [INFO] Broadcasting heartbeat
+```
+
+If you pass DEBUG, then the logs which are DEBUG and above will be shown, similarly for INFO, ERROR.  Default is INFO.
+Default lines are 100.
+
+### Get Specific Node Logs (Experimental)
+
+```bash
+$ gocluster logs --lines 5 --level DEBUG --node node001
+
+[2024-11-10 16:48:10] [INFO] Broadcasting heartbeat
+[2024-11-10 16:48:12] [INFO] Broadcasting heartbeat
+[2024-11-10 16:48:14] [INFO] Broadcasting heartbeat
+[2024-11-10 16:48:16] [INFO] Broadcasting heartbeat
+[2024-11-10 16:48:18] [INFO] Broadcasting heartbeat
+```
 
 ## Add Completion to your shell
 ```bash
