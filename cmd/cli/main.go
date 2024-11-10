@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	humanize "github.com/dustin/go-humanize"
@@ -62,6 +64,12 @@ type OperatorPayload struct {
 	Params      map[string]interface{} `json:"params,omitempty"`
 	Parallel    bool                   `json:"parallel"`
 	TargetNodes []string               `json:"target_nodes,omitempty"`
+}
+
+type LogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Message   string `json:"message"`
+	Level     string `json:"level"`
 }
 
 // Global flags
@@ -281,7 +289,6 @@ func getSelectedCluster() (*ClusterConfig, error) {
 	return &cluster, nil
 }
 
-// New command implementations
 func viewLogs(cmd *cobra.Command, args []string) {
 	cluster, err := getSelectedCluster()
 	if err != nil {
@@ -289,45 +296,118 @@ func viewLogs(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	targetNode := logNode
-	if targetNode == "" {
-		// Get leader node if no specific node is specified
-		resp, err := fetchFromAPI(cluster, "leader")
-		if err != nil {
-			fmt.Printf("Error fetching leader: %v\n", err)
-			return
-		}
-		leader, ok := resp.Data.(map[string]interface{})
+	queryParams := make([]string, 0)
+	if followLogs {
+		queryParams = append(queryParams, "stream=true")
+	}
+	if logLines > 0 {
+		queryParams = append(queryParams, fmt.Sprintf("lines=%d", logLines))
+	}
+
+	query := strings.Join(queryParams, "&")
+	if query != "" {
+		query = "?" + query
+	}
+
+	var nodeAddr string
+	if logNode != "" {
+		addr, ok := cluster.Nodes[logNode]
 		if !ok {
-			fmt.Println("Invalid response format for leader")
+			fmt.Printf("Error: Node '%s' not found in cluster\n", logNode)
 			return
 		}
-		targetNode = leader["id"].(string)
+		nodeAddr = addr
+	} else {
+		for _, addr := range cluster.Nodes {
+			nodeAddr = addr
+			break
+		}
 	}
 
-	endpoint := fmt.Sprintf("logs/%s?lines=%d", targetNode, logLines)
+	url := fmt.Sprintf("http://%s/api/logs%s", nodeAddr, query)
+
 	if followLogs {
-		endpoint += "&follow=true"
+		err = streamLogs(url)
+	} else {
+		err = fetchLogs(url)
 	}
 
-	resp, err := fetchFromAPI(cluster, endpoint)
 	if err != nil {
-		fmt.Printf("Error fetching logs: %v\n", err)
-		return
+		fmt.Printf("Error: %v\n", err)
+	}
+}
+
+func fetchLogs(url string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("error fetching logs: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned error: %s", string(body))
 	}
 
-	logs, ok := resp.Data.([]interface{})
-	if !ok {
-		fmt.Println("Invalid response format for logs")
-		return
+	var logs []LogEntry
+	if err := json.NewDecoder(resp.Body).Decode(&logs); err != nil {
+		return fmt.Errorf("error decoding response: %v", err)
 	}
 
-	for _, log := range logs {
-		fmt.Println(log)
+	for _, entry := range logs {
+		t, err := time.Parse(time.RFC3339, entry.Timestamp)
+		if err == nil {
+			fmt.Printf("[%s] ", t.Format("2006-01-02 15:04:05"))
+		}
+		fmt.Printf("[%s] %s\n", strings.ToUpper(entry.Level), entry.Message)
 	}
 
-	if followLogs {
-		fmt.Println("Log streaming not implemented yet")
+	return nil
+}
+
+func streamLogs(url string) error {
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("error creating request: %v", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("error connecting to server: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned error: %s", string(body))
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	fmt.Println("Connected to log stream. Press Ctrl+C to exit.")
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("error reading stream: %v", err)
+		}
+
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			var logEntry LogEntry
+			if err := json.Unmarshal([]byte(data), &logEntry); err == nil {
+				t, err := time.Parse(time.RFC3339, logEntry.Timestamp)
+				if err == nil {
+					fmt.Printf("[%s] ", t.Format("2006-01-02 15:04:05"))
+				}
+				fmt.Printf("[%s] %s\n", strings.ToUpper(logEntry.Level), logEntry.Message)
+			} else {
+				fmt.Print(data)
+			}
+		}
 	}
 }
 
